@@ -3,8 +3,13 @@ name: Phase 0 Deterministic Build + Verification
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
 
 env:
   SOURCE_DATE_EPOCH: ${{ github.event.inputs.source_date_epoch || github.run_attempt }}
