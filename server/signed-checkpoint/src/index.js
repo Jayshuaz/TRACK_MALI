@@ -76,7 +76,7 @@ app.post('/api/v1/telemetry/checkpoint', async (req, res) => {
           }
         };
         const headers = { 'Content-Type': 'application/json' };
-        if (process.env.ANCHOR_BEARER_TOKEN) headers['Authorization'] = `Bearer ${process.env.ANCHOR_BEARER_TOKEN}`;
+        if (process.env.ANCHOR_BEARER_TOKEN) headers.Authorization = `Bearer ${process.env.ANCHOR_BEARER_TOKEN}`;
         const r = await fetch(anchorEndpoint, { method: 'POST', body: JSON.stringify(anchorBody), headers, timeout: 10000 });
         const anchorRespText = await r.text();
         let anchorRespJson = null;
@@ -89,7 +89,7 @@ app.post('/api/v1/telemetry/checkpoint', async (req, res) => {
 
     // Persist checkpoint (append-only)
     try {
-      appendCheckpoint(persisted);
+      await appendCheckpoint(persisted);
     } catch (perr) {
       console.error('Failed to persist checkpoint:', perr);
     }
@@ -134,5 +134,12 @@ app.get('/internal/info', (req, res) => {
   res.json({ checkpoint_file: CHECKPOINTS_FILE, last_checkpoint: lastCheckpoint ? { merkle_root: lastCheckpoint.merkle_root, event_count: lastCheckpoint.event_count, anchor: !!lastCheckpoint.anchor } : null });
 });
 
-const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`Signed-checkpoint server listening on http://0.0.0.0:${port}`));
+function startServer(port = process.env.PORT || 8080) {
+  return app.listen(port, () => console.log(`Signed-checkpoint server listening on http://0.0.0.0:${port}`));
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, startServer };
