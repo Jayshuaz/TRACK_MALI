@@ -169,7 +169,7 @@ jobs:
           PY
 
       - name: Optional: Sign build hash (COSIGN) - recommended
-        if: env.COSIGN_KEY != ''
+        if: ${{ secrets.COSIGN_KEY != '' }}
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD || '' }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY || '' }}
