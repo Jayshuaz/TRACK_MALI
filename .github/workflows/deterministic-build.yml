@@ -1,0 +1,154 @@
+name: Deterministic Rust → WASM Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  # Use a reproducible epoch (overrideable when dispatching)
+  SOURCE_DATE_EPOCH: ${{ github.event.inputs.source_date_epoch || github.run_attempt }}
+  RUSTFLAGS: "-C link-arg=-Wl,--no-export-dynamic --remap-path-prefix=${{ github.workspace }}=/src"
+
+jobs:
+  build-and-publish:
+    name: Deterministic Build & Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.76.0
+          override: true
+
+      - name: Add wasm target
+        run: |
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install deterministic tooling (binaryen for wasm-opt)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y binutils curl xz-utils file ca-certificates build-essential git
+          sudo apt-get install -y binaryen
+
+      - name: Cargo build (release, locked)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo_home
+          RUSTFLAGS: ${{ env.RUSTFLAGS }}
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+        run: |
+          export CARGO_HOME=${CARGO_HOME}
+          # Ensure reproducible metadata in compiled artifacts
+          # Use --locked to force Cargo.lock; keep dependencies pinned
+          cargo build --release --target wasm32-unknown-unknown -p maliTrack_ui --locked
+
+      - name: Post-process WASM (wasm-opt + strip)
+        run: |
+          mkdir -p build_out
+          cp target/wasm32-unknown-unknown/release/maliTrack_ui.wasm build_out/
+          # Optimize deterministically and strip debug sections
+          wasm-opt -O2 --strip-debug -o build_out/maliTrack_ui.opt.wasm build_out/maliTrack_ui.wasm
+          wasm-strip build_out/maliTrack_ui.opt.wasm || true
+          mv build_out/maliTrack_ui.opt.wasm build_out/maliTrack_ui.wasm
+
+      - name: Create deterministic tarball of artifact
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+        run: |
+          mkdir -p dist
+          # Create TAR with deterministic metadata (GNU tar supports --sort and --mtime)
+          TAR_MTIME=${SOURCE_DATE_EPOCH}
+          tar --sort=name --mtime="@${TAR_MTIME}" --owner=0 --group=0 --numeric-owner -cf dist/maliTrack_ui.tar build_out/maliTrack_ui.wasm
+          gzip -n -9 -c dist/maliTrack_ui.tar > dist/maliTrack_ui.tar.gz
+          ls -l dist
+
+      - name: Compute content-addressed build hash (sha256)
+        id: buildhash
+        run: |
+          BUILD_HASH=$(sha256sum dist/maliTrack_ui.tar.gz | cut -d ' ' -f1)
+          echo "build_hash=$BUILD_HASH" >> $GITHUB_OUTPUT
+          echo "Build hash: $BUILD_HASH"
+
+      - name: Compute artifact size
+        id: artsize
+        run: |
+          SIZE=$(stat -c%s dist/maliTrack_ui.tar.gz)
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+
+      - name: Optional: Sign build hash (COSIGN) - recommended
+        if: env.COSIGN_KEY != ''
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD || '' }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY || '' }}
+        run: |
+          echo "Signing artifact with cosign (if COSIGN_KEY provided)"
+          # COSIGN_KEY should be base64-encoded keypair or path in runner; this step is optional
+          # Example: cosign sign-blob --key ${COSIGN_KEY} --output-signature dist/maliTrack_ui.tar.gz.sig dist/maliTrack_ui.tar.gz
+          which cosign || (curl -LO https://github.com/sigstore/cosign/releases/download/v2.0.0/cosign-linux-amd64 && chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign)
+          cosign sign-blob --key ${COSIGN_KEY} dist/maliTrack_ui.tar.gz || true
+        continue-on-error: true
+
+      - name: Update Phase-0 manifest with computed values
+        id: update_manifest
+        run: |
+          BUILD_HASH=${{ steps.buildhash.outputs.build_hash }}
+          SIZE=${{ steps.artsize.outputs.size }}
+          COMMIT=${GITHUB_SHA}
+          # Create an updated manifest copy (do not commit unless desired)
+          jq --arg commit "$COMMIT" \
+             --arg build_hash "$BUILD_HASH" \
+             --argjson size ${SIZE} \
+             '.artifacts.code_repo.commit = $commit | .artifacts.code_repo.build_hash = $build_hash | .artifacts.build_artifact.size_bytes = $size' \
+             maliTrack_cartridge_manifest.json > maliTrack_cartridge_manifest.updated.json
+          echo "Updated manifest written to maliTrack_cartridge_manifest.updated.json"
+
+      - name: Publish artifact to S3 (optional)
+        if: secrets.AWS_S3_BUCKET != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          pip install --user awscli
+          aws --version
+          aws s3 cp dist/maliTrack_ui.tar.gz s3://${{ secrets.AWS_S3_BUCKET }}/maliTrack_ui/${{ steps.buildhash.outputs.build_hash }}.tar.gz --acl private
+          echo "s3://$AWS_S3_BUCKET/maliTrack_ui/${{ steps.buildhash.outputs.build_hash }}.tar.gz" > artifact_url.txt
+
+      - name: Create GitHub Release and attach artifacts
+        if: ${{ github.ref_type == 'tag' }}
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: dist/maliTrack_ui.tar.gz,maliTrack_cartridge_manifest.updated.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+
+      - name: Output build metadata
+        run: |
+          echo "build_hash=${{ steps.buildhash.outputs.build_hash }}"
+          echo "artifact_size_bytes=${{ steps.artsize.outputs.size }}"
+          if [ -f artifact_url.txt ]; then cat artifact_url.txt; fi
+
+    outputs:
+      build_hash: ${{ steps.buildhash.outputs.build_hash }}
+      artifact_size: ${{ steps.artsize.outputs.size }}
+
+# Notes:
+# - Pin Rust toolchain & binaryen to specific versions to maximize reproducibility.
+# - SOURCE_DATE_EPOCH should be set consistently across builds to avoid timestamp variance.
+# - Use --locked and commit Cargo.lock. Avoid network access to dependencies during build if you require full hermeticity.
+# - Consider building in a fixed container image with pinned tool versions or using GitHub's cache for cargo registry and git submodules.
+# - Signing is shown as optional; for ed25519-native signing, include a small signing tool or use cosign/key management that suits your security model.
