@@ -1,4 +1,4 @@
-name: Deterministic Rust → WASM Build
+name: Phase 0 Deterministic Build + Verification
 
 on:
   workflow_dispatch:
@@ -7,13 +7,39 @@ on:
       - 'v*'
 
 env:
-  # Use a reproducible epoch (overrideable when dispatching)
   SOURCE_DATE_EPOCH: ${{ github.event.inputs.source_date_epoch || github.run_attempt }}
   RUSTFLAGS: "-C link-arg=-Wl,--no-export-dynamic --remap-path-prefix=${{ github.workspace }}=/src"
 
 jobs:
+  server-tests:
+    name: Signed Checkpoint Server Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install server dependencies
+        run: |
+          cd server/signed-checkpoint
+          npm install
+
+      - name: Run verification tests
+        run: |
+          cd server/signed-checkpoint
+          npm test
+
   build-and-publish:
     name: Deterministic Build & Publish
+    needs: server-tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -52,15 +78,12 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         run: |
           export CARGO_HOME=${CARGO_HOME}
-          # Ensure reproducible metadata in compiled artifacts
-          # Use --locked to force Cargo.lock; keep dependencies pinned
           cargo build --release --target wasm32-unknown-unknown -p maliTrack_ui --locked
 
       - name: Post-process WASM (wasm-opt + strip)
         run: |
           mkdir -p build_out
           cp target/wasm32-unknown-unknown/release/maliTrack_ui.wasm build_out/
-          # Optimize deterministically and strip debug sections
           wasm-opt -O2 --strip-debug -o build_out/maliTrack_ui.opt.wasm build_out/maliTrack_ui.wasm
           wasm-strip build_out/maliTrack_ui.opt.wasm || true
           mv build_out/maliTrack_ui.opt.wasm build_out/maliTrack_ui.wasm
@@ -70,7 +93,6 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         run: |
           mkdir -p dist
-          # Create TAR with deterministic metadata (GNU tar supports --sort and --mtime)
           TAR_MTIME=${SOURCE_DATE_EPOCH}
           tar --sort=name --mtime="@${TAR_MTIME}" --owner=0 --group=0 --numeric-owner -cf dist/maliTrack_ui.tar build_out/maliTrack_ui.wasm
           gzip -n -9 -c dist/maliTrack_ui.tar > dist/maliTrack_ui.tar.gz
@@ -148,8 +170,6 @@ jobs:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY || '' }}
         run: |
           echo "Signing artifact with cosign (if COSIGN_KEY provided)"
-          # COSIGN_KEY should be base64-encoded keypair or path in runner; this step is optional
-          # Example: cosign sign-blob --key ${COSIGN_KEY} --output-signature dist/maliTrack_ui.tar.gz.sig dist/maliTrack_ui.tar.gz
           which cosign || (curl -LO https://github.com/sigstore/cosign/releases/download/v2.0.0/cosign-linux-amd64 && chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign)
           cosign sign-blob --key ${COSIGN_KEY} dist/maliTrack_ui.tar.gz || true
         continue-on-error: true
@@ -160,7 +180,6 @@ jobs:
           BUILD_HASH=${{ steps.buildhash.outputs.build_hash }}
           SIZE=${{ steps.artsize.outputs.size }}
           COMMIT=${GITHUB_SHA}
-          # Create an updated manifest copy (do not commit unless desired)
           jq --arg commit "$COMMIT" \
              --arg build_hash "$BUILD_HASH" \
              --argjson size ${SIZE} \
