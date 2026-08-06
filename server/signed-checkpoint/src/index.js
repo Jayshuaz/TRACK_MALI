@@ -75,7 +75,7 @@ app.post('/api/v1/telemetry/checkpoint', async (req, res) => {
           }
         };
         const headers = { 'Content-Type': 'application/json' };
-        if (process.env.ANCHOR_BEARER_TOKEN) headers.Authorization = `Bearer ${process.env.ANCHOR_BEARER_TOKEN}`;
+        if (process.env.ANCHOR_BEARER_TOKEN) headers.Authorization = 'Bearer ' + process.env.ANCHOR_BEARER_TOKEN;
         const r = await fetch(anchorEndpoint, { method: 'POST', body: JSON.stringify(anchorBody), headers, timeout: 10000 });
         const anchorRespText = await r.text();
         let anchorRespJson = null;
