@@ -18,8 +18,8 @@ app.get('/', (req, res) => res.send('MaliTrack Phase-0 Signed Checkpoint Server 
 // Response: { checkpoint, note }
 app.post('/api/v1/telemetry/checkpoint', async (req, res) => {
   try {
-    const events = Array.isArray(req.body && req.body.events) ? req.body.events : require('./sample_events.json');
-    if (!Array.isArray(events) || events.length === 0) return res.status(400).json({ error: 'No events provided' });
+    const events = req.body && Array.isArray(req.body.events) ? req.body.events : [];
+    if (events.length === 0) return res.status(400).json({ error: 'No events provided' });
 
     // Deterministic leaves in-order
     const leaves = events.map(e => leafHash(e));
@@ -28,7 +28,6 @@ app.post('/api/v1/telemetry/checkpoint', async (req, res) => {
 
     // Signing
     const envKey = process.env.ED25519_PRIVATE_KEY_BASE64;
-    let secretProvided = !!envKey;
     let pubkeyBase64;
     let signatureBase64;
 
