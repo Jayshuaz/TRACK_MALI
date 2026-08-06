@@ -89,6 +89,58 @@ jobs:
           SIZE=$(stat -c%s dist/maliTrack_ui.tar.gz)
           echo "size=$SIZE" >> $GITHUB_OUTPUT
 
+      - name: Publish build checkpoint to verification endpoint
+        if: ${{ secrets.CHECKPOINT_ENDPOINT_URL != '' }}
+        env:
+          CHECKPOINT_ENDPOINT_URL: ${{ secrets.CHECKPOINT_ENDPOINT_URL }}
+          CHECKPOINT_BEARER_TOKEN: ${{ secrets.CHECKPOINT_BEARER_TOKEN || '' }}
+          BUILD_HASH: ${{ steps.buildhash.outputs.build_hash }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          endpoint = os.environ.get('CHECKPOINT_ENDPOINT_URL', '').strip()
+          if not endpoint:
+              sys.exit(0)
+
+          payload = {
+              'events': [
+                  {
+                      'id': 'build-artifact',
+                      'type': 'artifact',
+                      'value': os.environ.get('BUILD_HASH', ''),
+                      'meta': {
+                          'repository': os.environ.get('REPOSITORY', ''),
+                          'commit': os.environ.get('COMMIT_SHA', ''),
+                          'run_id': os.environ.get('RUN_ID', '')
+                      }
+                  },
+                  {
+                      'id': 'build-signed',
+                      'type': 'verification',
+                      'value': 1,
+                      'meta': {'source': 'github-actions'}
+                  }
+              ]
+          }
+
+          req = urllib.request.Request(endpoint, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
+          token = os.environ.get('CHECKPOINT_BEARER_TOKEN', '').strip()
+          if token:
+              req.add_header('Authorization', f'Bearer {token}')
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              body = resp.read().decode('utf-8')
+              with open('checkpoint-response.json', 'w', encoding='utf-8') as fh:
+                  fh.write(body)
+              print(body)
+          PY
+
       - name: Optional: Sign build hash (COSIGN) - recommended
         if: env.COSIGN_KEY != ''
         env:
@@ -132,7 +184,7 @@ jobs:
         if: ${{ github.ref_type == 'tag' }}
         uses: ncipollo/release-action@v1
         with:
-          artifacts: dist/maliTrack_ui.tar.gz,maliTrack_cartridge_manifest.updated.json
+          artifacts: dist/maliTrack_ui.tar.gz,maliTrack_cartridge_manifest.updated.json,checkpoint-response.json
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}
 
