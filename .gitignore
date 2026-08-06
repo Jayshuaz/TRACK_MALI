@@ -1,0 +1,11 @@
+# General ignores
+*.log
+
+# Node artifacts
+node_modules/
+server/signed-checkpoint/node_modules/
+
+# Signed checkpoint persistence
+server/signed-checkpoint/data/
+
+dist/
