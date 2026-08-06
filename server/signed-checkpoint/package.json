@@ -1,11 +1,12 @@
 {
   "name": "signed-checkpoint-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Minimal PoC server: produce signed_event checkpoints + Merkle root and provide Merkle proofs (Phase-0)",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "NODE_ENV=development node src/index.js"
+    "dev": "NODE_ENV=development node src/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "express": "^4.18.2",
